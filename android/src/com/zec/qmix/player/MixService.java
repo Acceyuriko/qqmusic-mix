@@ -17,6 +17,7 @@ import android.media.session.PlaybackState;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.util.Log;
 
 import com.zec.qmix.model.Track;
 import com.zec.qmix.net.Qq;
@@ -25,7 +26,11 @@ import com.zec.qmix.ui.MainActivity;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -62,6 +67,11 @@ public class MixService extends Service {
 
     final ExecutorService ex = Executors.newSingleThreadExecutor();
     final ExecutorService imgEx = Executors.newSingleThreadExecutor();
+    final ExecutorService dlEx = Executors.newSingleThreadExecutor();  // 预下载，同一时间只下一首
+    File audioDir;
+
+    static final long KEEP_MS = 360L * 24 * 3600 * 1000;
+    static final long MIN_FREE = 500L * 1024 * 1024;
     final Handler main = new Handler(Looper.getMainLooper());
 
     final Runnable saveTick = new Runnable() {
@@ -76,6 +86,9 @@ public class MixService extends Service {
         super.onCreate();
         sp = getSharedPreferences("qmix", 0);
         inst = this;
+        audioDir = new File(getFilesDir(), "audio");
+        audioDir.mkdirs();
+        dlEx.execute(this::dropExpired);
 
         NotificationChannel ch = new NotificationChannel(CH, "播放", NotificationManager.IMPORTANCE_LOW);
         ch.setShowBadge(false);
@@ -97,9 +110,13 @@ public class MixService extends Service {
             mp.start();
             playing = true;
             notifyUpdate();
+            prefetch();
         });
         player.setOnCompletionListener(mp -> next());
         player.setOnErrorListener((mp, what, extra) -> {
+            // 坏的缓存文件删掉，下次重新下载。播的是流时这个文件不存在，delete 无副作用。
+            Track t = cur;
+            if (t != null) new File(audioDir, t.mid).delete();
             next();
             return true;
         });
@@ -181,7 +198,10 @@ public class MixService extends Service {
         pos0 = seek;
         if (seek == 0) dur0 = 0;
         final Track ft = t;
-        if (ft.url.isEmpty()) {
+        // 本地有缓存就直接播文件，不用再换地址
+        final File local = new File(audioDir, ft.mid);
+        final boolean hit = local.exists();
+        if (!hit && ft.url.isEmpty()) {
             String u = null;
             try {
                 u = Qq.url(ft.mid);
@@ -189,21 +209,79 @@ public class MixService extends Service {
             }
             if (u != null) ft.url = u;
         }
-        if (ft.url.isEmpty()) {
+        if (!hit && ft.url.isEmpty()) {
             status = "播放失败";
             next();
             return;
         }
+        final String src = hit ? local.getPath() : ft.url;
+        Log.i("qmix", (hit ? "play local " : "play stream ") + ft.mid);
         final int at = seek;
         main.post(() -> {
             try {
                 pendSeek = at;
                 player.reset();
-                player.setDataSource(ft.url);
+                player.setDataSource(src);
                 player.prepareAsync();
             } catch (Exception e) {
                 status = "播放失败";
                 next();
+            }
+        });
+    }
+
+    // ---------- 本地缓存 ----------
+
+    /** 下载完成满 360 天的文件和上次没下完的 .part 删掉。App 启动时跑一次。 */
+    void dropExpired() {
+        File[] fs = audioDir.listFiles();
+        if (fs == null) return;
+        long now = System.currentTimeMillis();
+        for (File f : fs) {
+            if ((f.getName().endsWith(".part") || now - f.lastModified() >= KEEP_MS) && f.delete()) Log.i("qmix", "cache expired " + f.getName());
+        }
+    }
+
+    /** 后台下载队列里的下一首。已有文件、空间不足、拿不到地址都直接跳过。 */
+    void prefetch() {
+        Track t;
+        synchronized (queue) {
+            t = queue.size() < 2 ? null : queue.get(1);
+        }
+        if (t == null) return;
+        final String mid = t.mid;
+        final String url0 = t.url;
+        dlEx.execute(() -> {
+            File f = new File(audioDir, mid);
+            if (f.exists()) return;
+            if (audioDir.getUsableSpace() < MIN_FREE) {
+                Log.i("qmix", "cache skip low space " + mid);
+                return;
+            }
+            File part = new File(audioDir, mid + ".part");
+            HttpURLConnection c = null;
+            try {
+                String u = url0.isEmpty() ? Qq.url(mid) : url0;
+                if (u == null) throw new Exception("no url");
+                c = (HttpURLConnection) new URL(u).openConnection();
+                c.setConnectTimeout(15000);
+                c.setReadTimeout(20000);
+                if (c.getResponseCode() != 200) throw new Exception("http " + c.getResponseCode());
+                try (InputStream in = c.getInputStream(); OutputStream out = new FileOutputStream(part)) {
+                    byte[] b = new byte[64 * 1024];
+                    int n;
+                    while ((n = in.read(b)) > 0) {
+                        if (Thread.currentThread().isInterrupted()) throw new Exception("stop");
+                        out.write(b, 0, n);
+                    }
+                }
+                if (!part.renameTo(f)) throw new Exception("rename");
+                Log.i("qmix", "cache saved " + mid + " " + f.length());
+            } catch (Exception e) {
+                part.delete();
+                Log.i("qmix", "cache fail " + mid + " " + e);
+            } finally {
+                if (c != null) c.disconnect();
             }
         });
     }
@@ -507,6 +585,7 @@ public class MixService extends Service {
         session.release();
         ex.shutdownNow();
         imgEx.shutdownNow();
+        dlEx.shutdownNow();
         super.onDestroy();
     }
 }
