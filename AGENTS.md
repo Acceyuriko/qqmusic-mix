@@ -8,21 +8,32 @@
 # 打 APK（唯一构建入口，不要用 Gradle）
 pwsh -File C:\Users\zec_i\Documents\git\qqmusic-mix\android\build.ps1
 
-# 装到手机（USB 在线时）
-adb install -r C:\Users\zec_i\Documents\git\qqmusic-mix\android\build\qmix.apk
+# 连应用宝里的安卓环境（当前唯一可用设备）
+adb connect 127.0.0.1:5555
 
-# 装到手机（无线，手机不在电脑旁时）
-adb connect 192.168.1.212:5555
-adb -s 192.168.1.212:5555 install -r C:\Users\zec_i\Documents\git\qqmusic-mix\android\build\qmix.apk
+# 装 APK
+adb -s 127.0.0.1:5555 install -r C:\Users\zec_i\Documents\git\qqmusic-mix\android\build\qmix.apk
 
-# 截图（界面/视觉类 ticket 必须给）
-adb exec-out screencap -p > logs\xxx.png
+# 拉起 App（任务已存在时能直接拉起）
+adb -s 127.0.0.1:5555 shell am start -n com.zec.qmix/.ui.MainActivity
+
+# 找 App 在哪个显示上（id 每次可能变，见过 2 和 3）
+adb -s 127.0.0.1:5555 shell "dumpsys activity activities | grep -E 'Display #|com.zec.qmix/.ui.MainActivity'"
+
+# 截图：必须指定显示，并且用 cmd /c 重定向（PowerShell 的 > 会弄坏 PNG）
+cmd /c "adb -s 127.0.0.1:5555 exec-out screencap -p -d 3 > logs\xxx.png"
 
 # 看日志
-adb logcat -d -s qmix:V AndroidRuntime:E
+adb -s 127.0.0.1:5555 logcat -d -s qmix:V AndroidRuntime:E
 ```
 
-`adb devices` 里出现两个设备时，所有命令都要加 `-s <序列号>`。不要用「应用宝」调试，它会起自己的 adb 服务抢 5037 端口。
+应用宝调试的规则：
+
+- 第一次必须在应用宝窗口里手动点开「串串」。它会给 App 分配一个虚拟显示。
+- 分配好之后，`adb install -r` 不会删任务，`am start` 能自己把 App 拉起来。进程被杀干净就要再手动点一次。
+- 不要用 `am start --display N`，shell 没这个权限，会报 `SecurityException`。
+- 显示 0 是黑屏，别截。要截截图里有界面的那个显示 id。
+- 手机不在电脑旁时不要用手机，那台 `192.168.1.212:5555` 已经断开。
 
 产物：`android/build/qmix.apk`。
 
