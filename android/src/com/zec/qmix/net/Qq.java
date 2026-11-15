@@ -1,6 +1,7 @@
 package com.zec.qmix.net;
 
 import android.content.Context;
+import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -90,20 +91,77 @@ public class Qq {
     }
 
     public static String url(String mid) throws Exception {
-        JSONObject p = new JSONObject();
-        p.put("guid", GUID);
-        p.put("filename", new JSONArray().put("M800" + mid + ".mp3"));
-        p.put("songmid", new JSONArray().put(mid));
-        p.put("songtype", new JSONArray().put(0));
-        p.put("uin", UIN);
-        p.put("loginflag", 1);
-        p.put("platform", "20");
-        JSONObject d = call("vkey.GetVkeyServer", "CgiGetVkey", p);
+        String u = one(mid, mid, "M800", ".mp3");
+        if (u != null) return u;
 
-        JSONArray mi = d.optJSONArray("midurlinfo");
-        if (mi == null || mi.length() == 0) return null;
-        String purl = mi.getJSONObject(0).optString("purl");
-        if (purl.isEmpty()) return null;
-        return d.getJSONArray("sip").getString(0) + purl;
+        // 有的歌 mid 和媒体文件名不一样，用 media_mid 再试一次。
+        String mm = mediaMid(mid);
+        if (!mm.isEmpty() && !mm.equals(mid)) {
+            u = one(mid, mm, "M800", ".mp3");
+            if (u != null) return u;
+        }
+
+        String f = mm.isEmpty() ? mid : mm;
+        u = one(mid, f, "M500", ".mp3");
+        if (u != null) return u;
+        return one(mid, f, "C400", ".m4a");
+    }
+
+    static String mediaMid(String mid) {
+        try {
+            JSONObject p = new JSONObject();
+            p.put("song_type", 0);
+            p.put("song_mid", mid);
+            JSONObject d = call("music.pf_song_detail_svr", "get_song_detail_yqq", p);
+            return d.getJSONObject("track_info").getJSONObject("file").optString("media_mid");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /** 换一档 vkey，并实际探测这个地址能不能下。 */
+    static String one(String mid, String fileMid, String prefix, String ext) {
+        try {
+            JSONObject p = new JSONObject();
+            p.put("guid", GUID);
+            p.put("filename", new JSONArray().put(prefix + fileMid + ext));
+            p.put("songmid", new JSONArray().put(mid));
+            p.put("songtype", new JSONArray().put(0));
+            p.put("uin", UIN);
+            p.put("loginflag", 1);
+            p.put("platform", "20");
+            JSONObject d = call("vkey.GetVkeyServer", "CgiGetVkey", p);
+
+            JSONArray mi = d.optJSONArray("midurlinfo");
+            if (mi == null || mi.length() == 0) return null;
+            String purl = mi.getJSONObject(0).optString("purl");
+            if (purl.isEmpty()) return null;
+            String u = d.getJSONArray("sip").getString(0) + purl;
+            if (!reachable(u)) return null;
+            Log.i("qmix", "url " + mid + " " + fileMid + " " + prefix);
+            return u;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 只要前 1KB，确认 CDN 真的能下，不整首下。 */
+    static boolean reachable(String u) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(u).openConnection();
+            c.setConnectTimeout(3000);
+            c.setReadTimeout(3000);
+            c.setRequestProperty("Range", "bytes=0-1023");
+            int code = c.getResponseCode();
+            if (code != 200 && code != 206) return false;
+            try (InputStream in = c.getInputStream()) {
+                return in.read(new byte[1024]) > 0;
+            }
+        } catch (Exception e) {
+            return false;
+        } finally {
+            if (c != null) c.disconnect();
+        }
     }
 }

@@ -342,6 +342,7 @@ public class MixService extends Service {
         main.post(() -> {
             player.start();
             playing = true;
+            notifyUpdate();
         });
     }
 
@@ -351,6 +352,7 @@ public class MixService extends Service {
                 player.pause();
                 playing = false;
                 writeState();
+                notifyUpdate();
             }
         });
     }
@@ -439,7 +441,7 @@ public class MixService extends Service {
                         | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_SKIP_TO_NEXT
                         | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_SEEK_TO);
         sb.setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
-                position(), 1f);
+                position(), playing ? 1f : 0f);
         session.setPlaybackState(sb.build());
 
         if (t != null) {
