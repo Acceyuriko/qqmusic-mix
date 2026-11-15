@@ -104,9 +104,9 @@ public class MainActivity extends Activity {
                 shownMid = t.mid;
                 name.setText(t.name);
                 singer.setText(t.singer);
-                cover.setImageBitmap(null);
+                cover.setImageDrawable(null);
             }
-            if (cover.getDrawable() == null && s.cover != null) cover.setImageBitmap(s.cover);
+            if (cover.getDrawable() == null && s.cover != null && t.mid.equals(s.coverKey)) cover.setImageBitmap(s.cover);
         }
 
         playBtn.setText(s.playing ? "暂停" : "播放");

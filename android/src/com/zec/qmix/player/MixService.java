@@ -58,7 +58,7 @@ public class MixService extends Service {
     Mixer mixer;
     SharedPreferences sp;
     public volatile Bitmap cover;
-    String coverKey = "";
+    public volatile String coverKey = "";
 
     final ExecutorService ex = Executors.newSingleThreadExecutor();
     final ExecutorService imgEx = Executors.newSingleThreadExecutor();
@@ -467,14 +467,15 @@ public class MixService extends Service {
         imgEx.execute(() -> {
             try (InputStream in = (InputStream) new URL(u).openStream()) {
                 Bitmap bm = BitmapFactory.decodeStream(in);
-                if (bm != null && key.equals(coverKey)) {
+                if (bm == null) return;
+                // 检查 key 和写 cover 都在主线程做，中间切歌也不会写进旧图
+                main.post(() -> {
+                    if (!key.equals(coverKey)) return;
                     cover = bm;
-                    main.post(() -> {
-                        updateSession();
-                        ((NotificationManager) getSystemService(NOTIFICATION_SERVICE))
-                                .notify(1, buildNotification());
-                    });
-                }
+                    updateSession();
+                    ((NotificationManager) getSystemService(NOTIFICATION_SERVICE))
+                            .notify(1, buildNotification());
+                });
             } catch (Exception ignored) {
             }
         });
