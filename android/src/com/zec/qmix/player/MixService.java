@@ -38,6 +38,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MixService extends Service {
 
@@ -61,6 +63,9 @@ public class MixService extends Service {
     double[] pendLevel;  // 这首歌的分析结果 {start, end, loudness}，没有就是 null
     int endMs;           // 播到这里就切下一首，0 = 不管
     LoudnessEnhancer le;
+    long[] lrcT;         // 当前歌每行歌词的时间（毫秒），没歌词是 null
+    String[] lrcL;
+    int lrcIdx = -1;     // 当前显示的是第几行，-1 = 还没唱到 / 没歌词
 
     static final double TARGET_DB = -16;
 
@@ -74,6 +79,7 @@ public class MixService extends Service {
     final ExecutorService ex = Executors.newSingleThreadExecutor();
     final ExecutorService imgEx = Executors.newSingleThreadExecutor();
     final ExecutorService dlEx = Executors.newSingleThreadExecutor();  // 预下载，同一时间只下一首
+    final ExecutorService lrcEx = Executors.newSingleThreadExecutor();  // 拿歌词
     File audioDir;
     AudioAnalyzer analyzer;
 
@@ -94,6 +100,23 @@ public class MixService extends Service {
                 }
             }
             main.postDelayed(this, 200);
+        }
+    };
+
+    // 每秒对一次歌词行，行变了才更新 metadata（车机靠它显示歌词）
+    final Runnable lyricTick = new Runnable() {
+        @Override public void run() {
+            if (ready && lrcT != null) {
+                int p = player.getCurrentPosition();
+                int i = lrcT.length - 1;
+                while (i >= 0 && lrcT[i] > p) i--;
+                if (i != lrcIdx) {
+                    lrcIdx = i;
+                    if (i >= 0) Log.i("qmix", "lyric " + cur.mid + " line=" + i + " t=" + lrcT[i] + " pos=" + p + " " + lrcL[i]);
+                    updateSession();
+                }
+            }
+            main.postDelayed(this, 1000);
         }
     };
 
@@ -183,6 +206,7 @@ public class MixService extends Service {
         });
         main.postDelayed(saveTick, 2000);
         main.post(endTick);
+        main.post(lyricTick);
     }
 
     // ---------- 歌单 ----------
@@ -253,6 +277,7 @@ public class MixService extends Service {
             try {
                 pendSeek = at;
                 pendLevel = lv;
+                loadLyric(ft.mid);
                 endMs = 0;
                 if (le != null) {
                     le.release();
@@ -265,6 +290,56 @@ public class MixService extends Service {
                 status = "播放失败";
                 next();
             }
+        });
+    }
+
+    // ---------- 歌词 ----------
+
+    static final Pattern LRC_TAG = Pattern.compile("^\\[(\\d+):(\\d+)(?:\\.(\\d+))?\\]");
+
+    /** 主线程调：先清掉上一首的歌词，再到后台拿这首的。拿不到就当没歌词。 */
+    void loadLyric(String mid) {
+        lrcT = null;
+        lrcL = null;
+        lrcIdx = -1;
+        lrcEx.execute(() -> {
+            List<long[]> ts = new ArrayList<>();   // {时间, 行号}
+            List<String> ls = new ArrayList<>();
+            try {
+                String raw = Qq.lyric(mid);
+                if (raw != null) {
+                    for (String line : raw.split("\n")) {
+                        String text = line;
+                        List<Long> times = new ArrayList<>();
+                        Matcher m;
+                        while ((m = LRC_TAG.matcher(text)).find()) {
+                            String frac = m.group(3) == null ? "0" : (m.group(3) + "00").substring(0, 3);
+                            times.add(Long.parseLong(m.group(1)) * 60000 + Long.parseLong(m.group(2)) * 1000 + Long.parseLong(frac));
+                            text = text.substring(m.end());
+                        }
+                        text = text.trim();
+                        if (times.isEmpty() || text.isEmpty()) continue;
+                        for (long tm : times) ts.add(new long[]{tm, ls.size()});
+                        ls.add(text);
+                    }
+                }
+            } catch (Exception e) {
+                Log.i("qmix", "lyric fail " + mid + " " + e);
+            }
+            Collections.sort(ts, (a, b) -> Long.compare(a[0], b[0]));
+            long[] t = new long[ts.size()];
+            String[] l = new String[ts.size()];
+            for (int i = 0; i < t.length; i++) {
+                t[i] = ts.get(i)[0];
+                l[i] = ls.get((int) ts.get(i)[1]);
+            }
+            Log.i("qmix", "lyric " + mid + " lines=" + t.length);
+            main.post(() -> {
+                if (cur == null || !cur.mid.equals(mid) || t.length == 0) return;
+                lrcT = t;
+                lrcL = l;
+                lrcIdx = -1;
+            });
         });
     }
 
@@ -616,9 +691,13 @@ public class MixService extends Service {
         session.setPlaybackState(sb.build());
 
         if (t != null) {
+            // 车机只显示标题和艺术家：标题放「歌名 - 歌手」，艺术家放当前歌词，没歌词放歌手
+            String line = lrcT != null && lrcIdx >= 0 ? lrcL[lrcIdx] : t.singer;
             MediaMetadata.Builder mb = new MediaMetadata.Builder()
-                    .putString(MediaMetadata.METADATA_KEY_TITLE, t.name)
-                    .putString(MediaMetadata.METADATA_KEY_ARTIST, t.singer);
+                    .putString(MediaMetadata.METADATA_KEY_TITLE, t.name + " - " + t.singer)
+                    .putString(MediaMetadata.METADATA_KEY_ARTIST, line);
+            int d = duration();
+            if (d > 0) mb.putLong(MediaMetadata.METADATA_KEY_DURATION, d);  // 车机进度条要用
             if (cover != null) {
                 mb.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, cover);
             }
@@ -678,6 +757,7 @@ public class MixService extends Service {
         session.release();
         ex.shutdownNow();
         imgEx.shutdownNow();
+        lrcEx.shutdownNow();
         dlEx.shutdownNow();
         analyzer.stop();
         if (le != null) le.release();

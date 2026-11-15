@@ -228,4 +228,27 @@ public class Qq {
             if (c != null) c.disconnect();
         }
     }
+
+    /** 拿 LRC 歌词原文。接口返回非 0 或没歌词就是 null。网络出错会抛。 */
+    public static String lyric(String mid) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(
+                "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=" + mid + "&format=json&nobase64=1")
+                .openConnection();
+        try {
+            c.setConnectTimeout(5000);
+            c.setReadTimeout(5000);
+            c.setRequestProperty("Referer", "https://y.qq.com/");
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            try (InputStream in = c.getInputStream()) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            }
+            JSONObject j = new JSONObject(new String(bo.toByteArray(), StandardCharsets.UTF_8));
+            String ly = j.optString("lyric");
+            return j.optInt("code", -1) == 0 && !ly.isEmpty() ? ly : null;
+        } finally {
+            c.disconnect();
+        }
+    }
 }
