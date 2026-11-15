@@ -12,6 +12,7 @@ import android.graphics.BitmapFactory;
 import android.media.AudioAttributes;
 import android.media.MediaMetadata;
 import android.media.MediaPlayer;
+import android.media.audiofx.LoudnessEnhancer;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
 import android.os.Handler;
@@ -57,6 +58,11 @@ public class MixService extends Service {
     volatile int pos0;   // 恢复出来的进度，没 prepare 时给界面用
     volatile int dur0;   // 恢复出来的时长，没 prepare 时给界面用
     int pendSeek;        // prepare 完成后先跳到这
+    double[] pendLevel;  // 这首歌的分析结果 {start, end, loudness}，没有就是 null
+    int endMs;           // 播到这里就切下一首，0 = 不管
+    LoudnessEnhancer le;
+
+    static final double TARGET_DB = -16;
 
     MediaPlayer player;
     MediaSession session;
@@ -74,6 +80,22 @@ public class MixService extends Service {
     static final long KEEP_MS = 360L * 24 * 3600 * 1000;
     static final long MIN_FREE = 500L * 1024 * 1024;
     final Handler main = new Handler(Looper.getMainLooper());
+
+    // 每 200ms 看一次是否到了尾静音
+    final Runnable endTick = new Runnable() {
+        @Override public void run() {
+            if (ready && playing && endMs > 0) {
+                int p = player.getCurrentPosition();
+                if (p >= endMs) {
+                    Log.i("qmix", "trim end " + (cur == null ? "" : cur.mid) + " pos=" + p + " end=" + endMs);
+                    endMs = 0;
+                    player.pause();  // 先停，不然放到文件真结尾时 onCompletion 会再切一次
+                    next();
+                }
+            }
+            main.postDelayed(this, 200);
+        }
+    };
 
     final Runnable saveTick = new Runnable() {
         @Override public void run() {
@@ -103,18 +125,23 @@ public class MixService extends Service {
                 .build());
         player.setOnPreparedListener(mp -> {
             ready = true;
+            boolean resumed = pendSeek > 0;
             if (pendSeek > 0) {
                 mp.seekTo(pendSeek);
                 pendSeek = 0;
             } else {
                 writeState();
             }
+            applyLevel(mp, resumed);
             mp.start();
             playing = true;
             notifyUpdate();
             prefetch();
         });
-        player.setOnCompletionListener(mp -> next());
+        player.setOnCompletionListener(mp -> {
+            endMs = 0;  // 先清掉，免得 endTick 在 next() 生效前再切一次
+            next();
+        });
         player.setOnErrorListener((mp, what, extra) -> {
             // 坏的缓存文件删掉，下次重新下载。播的是流时这个文件不存在，delete 无副作用。
             Track t = cur;
@@ -155,6 +182,7 @@ public class MixService extends Service {
             }
         });
         main.postDelayed(saveTick, 2000);
+        main.post(endTick);
     }
 
     // ---------- 歌单 ----------
@@ -219,10 +247,17 @@ public class MixService extends Service {
         final String src = hit ? local.getPath() : ft.url;
         Log.i("qmix", (hit ? "play local " : "play stream ") + ft.mid);
         if (hit) analyzer.analyze(ft.mid);
+        final double[] lv = hit ? levelOf(ft.mid, local) : null;
         final int at = seek;
         main.post(() -> {
             try {
                 pendSeek = at;
+                pendLevel = lv;
+                endMs = 0;
+                if (le != null) {
+                    le.release();
+                    le = null;
+                }
                 player.reset();
                 player.setDataSource(src);
                 player.prepareAsync();
@@ -231,6 +266,57 @@ public class MixService extends Service {
                 next();
             }
         });
+    }
+
+    // ---------- 掐头去尾、音量均衡 ----------
+
+    /** 读分析结果。文件大小对不上、fail、start >= end、响度不是有限数，都当没有。 */
+    double[] levelOf(String mid, File f) {
+        String[] v = getSharedPreferences("analyze", 0).getString(mid, "").split(",");
+        if (v.length != 4 || !v[3].equals(String.valueOf(f.length()))) return null;
+        try {
+            double start = Double.parseDouble(v[0]);
+            double end = Double.parseDouble(v[1]);
+            double loud = Double.parseDouble(v[2]);
+            if (start >= end || Double.isNaN(loud) || Double.isInfinite(loud)) return null;
+            return new double[]{start, end, loud};
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** prepare 完成后调：从头播时跳过开头静音，设好结束点和音量。 */
+    void applyLevel(MediaPlayer mp, boolean resumed) {
+        String mid = cur == null ? "" : cur.mid;
+        double[] lv = pendLevel;
+        if (lv == null) {
+            mp.setVolume(1f, 1f);
+            Log.i("qmix", "level " + mid + " none");
+            return;
+        }
+        if (!resumed && lv[0] > 0) mp.seekTo((int) lv[0]);
+        endMs = (int) lv[1];
+        double gainDb = Math.max(-12, Math.min(12, TARGET_DB - lv[2]));
+        String how;
+        if (gainDb > 0) {
+            mp.setVolume(1f, 1f);
+            try {
+                le = new LoudnessEnhancer(mp.getAudioSessionId());
+                le.setTargetGain((int) (gainDb * 100));
+                le.setEnabled(true);
+                how = "LoudnessEnhancer targetGain=" + (int) (gainDb * 100) + "mB";
+            } catch (RuntimeException e) {
+                // 设备不支持或资源不够时构造会抛，不加增益照常播
+                Log.i("qmix", "level " + mid + " enhancer fail " + e);
+                how = "no gain";
+            }
+        } else {
+            float vol = (float) Math.pow(10, gainDb / 20);
+            mp.setVolume(vol, vol);
+            how = "setVolume " + String.format(java.util.Locale.US, "%.3f", vol);
+        }
+        Log.i("qmix", "level " + mid + " start=" + (resumed ? "skip(resume)" : String.valueOf((int) lv[0]))
+                + " end=" + endMs + " loud=" + lv[2] + " gainDb=" + String.format(java.util.Locale.US, "%.1f", gainDb) + " " + how);
     }
 
     // ---------- 本地缓存 ----------
@@ -594,6 +680,7 @@ public class MixService extends Service {
         imgEx.shutdownNow();
         dlEx.shutdownNow();
         analyzer.stop();
+        if (le != null) le.release();
         super.onDestroy();
     }
 }
