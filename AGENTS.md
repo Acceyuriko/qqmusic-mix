@@ -8,8 +8,12 @@
 # 打 APK（唯一构建入口，不要用 Gradle）
 pwsh -File C:\Users\zec_i\Documents\git\qqmusic-mix\android\build.ps1
 
-# 装到手机
+# 装到手机（USB 在线时）
 adb install -r C:\Users\zec_i\Documents\git\qqmusic-mix\android\build\qmix.apk
+
+# 装到手机（无线，手机不在电脑旁时）
+adb connect 192.168.1.212:5555
+adb -s 192.168.1.212:5555 install -r C:\Users\zec_i\Documents\git\qqmusic-mix\android\build\qmix.apk
 
 # 截图（界面/视觉类 ticket 必须给）
 adb exec-out screencap -p > logs\xxx.png
@@ -17,6 +21,8 @@ adb exec-out screencap -p > logs\xxx.png
 # 看日志
 adb logcat -d -s qmix:V AndroidRuntime:E
 ```
+
+`adb devices` 里出现两个设备时，所有命令都要加 `-s <序列号>`。不要用「应用宝」调试，它会起自己的 adb 服务抢 5037 端口。
 
 产物：`android/build/qmix.apk`。
 
