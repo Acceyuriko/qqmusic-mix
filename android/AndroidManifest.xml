@@ -14,7 +14,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
-        android:label="穿插听"
+        android:label="串串"
+        android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
         android:theme="@style/AppTheme">
 

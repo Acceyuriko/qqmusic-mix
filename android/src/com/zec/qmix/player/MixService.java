@@ -275,7 +275,7 @@ public class MixService extends Service {
             b.setContentText(t.singer);
             b.setLargeIcon(cover);
         } else {
-            b.setContentTitle("穿插听");
+            b.setContentTitle("串串");
             b.setContentText(status);
         }
         return b.build();
