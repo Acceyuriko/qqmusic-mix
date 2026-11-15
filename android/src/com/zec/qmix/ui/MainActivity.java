@@ -159,6 +159,12 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        super.onPause();
+        if (MixService.inst != null) MixService.inst.save();
+    }
+
+    @Override
     protected void onDestroy() {
         h.removeCallbacksAndMessages(null);
         super.onDestroy();
