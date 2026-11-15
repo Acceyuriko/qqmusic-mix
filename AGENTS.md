@@ -2,45 +2,57 @@
 
 安卓 App，包名 `com.zec.qmix`。另有一个电脑网页版 `server.js` + `public/index.html`。
 
-## 构建与验证
+## 构建与验证（Mac）
 
-```powershell
-# 打 APK（唯一构建入口，不要用 Gradle）
-pwsh -File C:\Users\zec_i\Documents\git\qqmusic-mix\android\build.ps1
+开发机是 Mac（Apple Silicon）。不要用用户手机调试。调试设备是 SDK 自带模拟器，AVD 名 `qmix`（android-34 google_apis arm64-v8a）。
 
-# 连应用宝里的安卓环境（当前唯一可用设备）
-adb connect 127.0.0.1:5555
+```bash
+ADB=~/Library/Android/sdk/platform-tools/adb
+
+# 打 APK（唯一构建入口，不要用 Gradle）。每次 versionCode +1
+bash ~/git/qqmusic-mix/android/build.sh
+
+# 启动模拟器（-no-audio：Mac 上不出声）。放后台跑，不要卡住终端
+~/Library/Android/sdk/emulator/emulator -avd qmix -no-audio -no-boot-anim -no-snapshot-save &
+
+# 等开机完成，看设备（应看到 emulator-5554）
+$ADB wait-for-device; until [ "$($ADB shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do sleep 2; done
+$ADB devices
+
+# 媒体音量调到 0（每次开机后、播放前都要做）。按 16 次音量减
+for i in $(seq 1 16); do $ADB shell input keyevent KEYCODE_VOLUME_DOWN; done
+$ADB shell dumpsys audio | grep -A6 '^- STREAM_MUSIC' | tail -1   # 要看到 (speaker): 0
 
 # 装 APK
-adb -s 127.0.0.1:5555 install -r C:\Users\zec_i\Documents\git\qqmusic-mix\android\build\qmix.apk
+$ADB install -r ~/git/qqmusic-mix/android/build/qmix.apk
 
-# 拉起 App（任务已存在时能直接拉起）
-adb -s 127.0.0.1:5555 shell am start -n com.zec.qmix/.ui.MainActivity
+# 拉起 App
+$ADB shell am start -n com.zec.qmix/.ui.MainActivity
 
-# 找 App 在哪个显示上（id 每次可能变，见过 2 和 3）
-adb -s 127.0.0.1:5555 shell "dumpsys activity activities | grep -E 'Display #|com.zec.qmix/.ui.MainActivity'"
+# 截图（文件名不要复用旧图）
+$ADB exec-out screencap -p > ~/git/qqmusic-mix/logs/xxx.png
 
-# 截图：必须指定显示，并且用 cmd /c 重定向（PowerShell 的 > 会弄坏 PNG）
-cmd /c "adb -s 127.0.0.1:5555 exec-out screencap -p -d 3 > logs\xxx.png"
+# 看是否在播：state=PLAYING(3) 是在播，PAUSED(2) 是暂停
+$ADB shell dumpsys media_session | grep -A12 'package=com.zec.qmix' | grep 'state=PlaybackState'
 
 # 看日志
-adb -s 127.0.0.1:5555 logcat -d -s qmix:V AndroidRuntime:E
+$ADB logcat -d -s qmix:V AndroidRuntime:E
 ```
 
-应用宝调试的规则：
+模拟器的规则：
 
-- 第一次必须在应用宝窗口里手动点开「串串」。它会给 App 分配一个虚拟显示。
-- 分配好之后，`adb install -r` 不会删任务，`am start` 能自己把 App 拉起来。进程被杀干净就要再手动点一次。
-- 不要用 `am start --display N`，shell 没这个权限，会报 `SecurityException`。
-- 显示 0 是黑屏，别截。要截截图里有界面的那个显示 id。
-- 手机不在电脑旁时不要用手机，那台 `192.168.1.212:5555` 已经断开。
+- `cmd media_session volume --set 0` 在这个镜像上不生效，要用上面的按键办法调音量。
+- 第一次打开 App 会弹通知权限框，点「Allow」。
+- App 打开后默认是暂停，要点「播放」才会出声。
+
+Windows 旧环境用 `android/build.ps1`，Mac 不用它。
 
 产物：`android/build/qmix.apk`。
 
 ## 硬约束
 
-- JDK 用 `C:\Users\zec_i\apps\jdk17`，不要用 JDK 21。原因：build-tools 34.0.0 带的 d8 8.2.2 读到 JDK 21 javac 生成的匿名类 `MethodParameters` 属性会 NPE。
-- Android SDK：`C:\Users\zec_i\apps\android-sdk`（platform 34，build-tools 34.0.0）。
+- JDK 用 17（Mac：`/opt/homebrew/opt/openjdk@17`，Homebrew 装的 `openjdk@17`），不要用 JDK 21。原因：build-tools 34.0.0 带的 d8 8.2.2 读到 JDK 21 javac 生成的匿名类 `MethodParameters` 属性会 NPE。
+- Android SDK：Mac 上是 `~/Library/Android/sdk`（platform 34，build-tools 34.0.0）。
 - 不用 Gradle，不用第三方依赖。
 - `.cookie` 和 `android/assets/cookie.txt` 是登录凭证，不进 git。
 - 调试播放必须静音，不要突然出声。
