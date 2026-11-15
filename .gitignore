@@ -1,0 +1,14 @@
+# 登录凭证，绝不进 git
+.cookie
+cookie.txt
+
+# 签名密钥只留本机，绝不进 git（仓库可能转 public）
+android/qmix.jks
+
+# 领导工作目录（工单、调研、截图）
+.dsh/
+
+# 构建产物
+android/build/
+logs/
+*.log
