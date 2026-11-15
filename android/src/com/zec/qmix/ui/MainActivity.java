@@ -18,6 +18,7 @@ import android.widget.TextView;
 
 import com.zec.qmix.R;
 import com.zec.qmix.model.Track;
+import com.zec.qmix.net.Qq;
 import com.zec.qmix.player.MixService;
 
 import java.util.ArrayList;
@@ -73,6 +74,13 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
         }
+
+        // 长按歌名进 cookie 页；两处都读不到 cookie 就直接打开
+        name.setOnLongClickListener(v -> {
+            startActivity(new Intent(this, CookieActivity.class));
+            return true;
+        });
+        if (!Qq.init(this)) startActivity(new Intent(this, CookieActivity.class));
 
         startForegroundService(new Intent(this, MixService.class));
         h.post(tick);

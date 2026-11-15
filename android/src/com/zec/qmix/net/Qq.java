@@ -17,18 +17,82 @@ import java.nio.charset.StandardCharsets;
 
 public class Qq {
 
-    static String COOKIE, UIN, SKEY;
-    static int GTK;
+    static volatile String COOKIE, UIN, SKEY;
+    static volatile int GTK;
     static final String GUID = "10000";
 
-    public static void init(Context c) throws Exception {
-        try (BufferedReader r = new BufferedReader(
-                new InputStreamReader(c.getAssets().open("cookie.txt"), StandardCharsets.UTF_8))) {
-            COOKIE = r.readLine();
-            UIN = r.readLine();
-            SKEY = r.readLine();
+    /** 先读 SharedPreferences 里用户输入的 cookie，没有再读 assets。都读不到返回 false。 */
+    public static boolean init(Context c) {
+        String s = c.getSharedPreferences("qmix", 0).getString("cookie", "");
+        if (s.isEmpty()) {
+            try (BufferedReader r = new BufferedReader(
+                    new InputStreamReader(c.getAssets().open("cookie.txt"), StandardCharsets.UTF_8))) {
+                s = r.readLine();
+            } catch (Exception e) {
+                return false;
+            }
         }
-        GTK = hash33(SKEY);
+        return use(s);
+    }
+
+    public static String cookie() {
+        return COOKIE;
+    }
+
+    /** 换成这串 cookie。缺 uin 或 qm_keyst 就不换，返回 false。 */
+    static boolean use(String s) {
+        String u = field(s, "uin");
+        String k = field(s, "qm_keyst");
+        if (u.isEmpty() || k.isEmpty()) return false;
+        COOKIE = s;
+        UIN = u;
+        SKEY = k;
+        GTK = hash33(k);
+        return true;
+    }
+
+    static String field(String s, String key) {
+        for (String p : s.split(";")) {
+            p = p.trim();
+            if (p.startsWith(key + "=")) return p.substring(key.length() + 1);
+        }
+        return "";
+    }
+
+    /**
+     * 临时换成新 cookie，拉收藏前 3 首，至少 1 首拿得到 320k 播放地址才算有效。
+     * 有效就留着新的；无效换回旧的。要在后台线程调。
+     */
+    public static synchronized boolean check(String s) {
+        String c0 = COOKIE, u0 = UIN, k0 = SKEY;
+        int g0 = GTK;
+        boolean ok = false;
+        if (use(s)) {
+            try {
+                JSONObject p = new JSONObject();
+                p.put("disstid", 0);
+                p.put("dirid", 201);
+                p.put("tag", true);
+                p.put("song_begin", 0);
+                p.put("song_num", 3);
+                p.put("userinfo", true);
+                p.put("orderlist", true);
+                JSONArray list = call("music.srfDissInfo.DissInfo", "CgiGetDiss", p).optJSONArray("songlist");
+                for (int i = 0; list != null && i < list.length() && !ok; i++) {
+                    // 只认 320k：128k/96k 有的歌不登录也拿得到，验不出 cookie 坏没坏
+                    String u = url(list.getJSONObject(i).optString("mid"));
+                    ok = u != null && u.contains("/M800");
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        if (!ok) {
+            COOKIE = c0;
+            UIN = u0;
+            SKEY = k0;
+            GTK = g0;
+        }
+        return ok;
     }
 
     static int hash33(String s) {

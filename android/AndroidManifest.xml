@@ -29,6 +29,10 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ui.CookieActivity"
+            android:exported="false" />
+
         <service
             android:name=".player.MixService"
             android:exported="false"
