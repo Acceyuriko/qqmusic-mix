@@ -69,6 +69,7 @@ public class MixService extends Service {
     final ExecutorService imgEx = Executors.newSingleThreadExecutor();
     final ExecutorService dlEx = Executors.newSingleThreadExecutor();  // 预下载，同一时间只下一首
     File audioDir;
+    AudioAnalyzer analyzer;
 
     static final long KEEP_MS = 360L * 24 * 3600 * 1000;
     static final long MIN_FREE = 500L * 1024 * 1024;
@@ -89,6 +90,7 @@ public class MixService extends Service {
         audioDir = new File(getFilesDir(), "audio");
         audioDir.mkdirs();
         dlEx.execute(this::dropExpired);
+        analyzer = new AudioAnalyzer(this, audioDir);
 
         NotificationChannel ch = new NotificationChannel(CH, "播放", NotificationManager.IMPORTANCE_LOW);
         ch.setShowBadge(false);
@@ -216,6 +218,7 @@ public class MixService extends Service {
         }
         final String src = hit ? local.getPath() : ft.url;
         Log.i("qmix", (hit ? "play local " : "play stream ") + ft.mid);
+        if (hit) analyzer.analyze(ft.mid);
         final int at = seek;
         main.post(() -> {
             try {
@@ -253,7 +256,10 @@ public class MixService extends Service {
         final String url0 = t.url;
         dlEx.execute(() -> {
             File f = new File(audioDir, mid);
-            if (f.exists()) return;
+            if (f.exists()) {
+                analyzer.analyze(mid);  // 已缓存但可能还没分析，轮到前算好；分析过的会自己跳过
+                return;
+            }
             if (audioDir.getUsableSpace() < MIN_FREE) {
                 Log.i("qmix", "cache skip low space " + mid);
                 return;
@@ -277,6 +283,7 @@ public class MixService extends Service {
                 }
                 if (!part.renameTo(f)) throw new Exception("rename");
                 Log.i("qmix", "cache saved " + mid + " " + f.length());
+                analyzer.analyze(mid);
             } catch (Exception e) {
                 part.delete();
                 Log.i("qmix", "cache fail " + mid + " " + e);
@@ -586,6 +593,7 @@ public class MixService extends Service {
         ex.shutdownNow();
         imgEx.shutdownNow();
         dlEx.shutdownNow();
+        analyzer.stop();
         super.onDestroy();
     }
 }
