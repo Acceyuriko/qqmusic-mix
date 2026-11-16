@@ -24,6 +24,7 @@ import android.media.session.PlaybackState;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import com.zec.qmix.L;
 import com.zec.qmix.model.Track;
@@ -42,8 +43,10 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
@@ -101,6 +104,12 @@ public class MixService extends Service {
     final ExecutorService imgEx = Executors.newSingleThreadExecutor();
     final ExecutorService dlEx = Executors.newSingleThreadExecutor();  // 预下载，同一时间只下一首
     final ExecutorService lrcEx = Executors.newSingleThreadExecutor();  // 拿歌词
+    final ExecutorService repEx = Executors.newSingleThreadExecutor();  // 上报最近播放
+    final Map<String, Long> reportedAt = new HashMap<>();  // mid -> 上次上报时间，只在主线程用
+    int playedMs;        // 这首歌实际播了多久（每 200ms 加一次），到 30 秒上报
+    boolean reportedThis;  // 这次播放已经调过上报（长歌 30 秒报过，放完就不再报）
+    static final int REPORT_AFTER_MS = 30000;
+    static final long REPORT_GAP_MS = 5 * 60 * 1000;
     File audioDir;
     AudioAnalyzer analyzer;
 
@@ -111,6 +120,10 @@ public class MixService extends Service {
     // 每 200ms 看一次是否到了尾静音
     final Runnable endTick = new Runnable() {
         @Override public void run() {
+            if (ready && playing) {
+                playedMs += 200;
+                if (playedMs == REPORT_AFTER_MS) report(cur);
+            }
             if (ready && playing && endMs > 0) {
                 int p = player.getCurrentPosition();
                 if (p >= endMs) {
@@ -118,6 +131,7 @@ public class MixService extends Service {
                     endMs = 0;
                     player.pause();  // 先停，不然放到文件真结尾时 onCompletion 会再切一次
                     why = "结尾裁剪";
+                    report(cur);
                     next(false);
                 }
             }
@@ -196,6 +210,8 @@ public class MixService extends Service {
                 writeState();
             }
             applyLevel(mp, resumed);
+            playedMs = 0;
+            reportedThis = false;
             loading = false;
             status = "";  // 「加载中...」等提示到真正能播时才清
             if (playing) mp.start();  // 加载中点了暂停就不开播
@@ -205,6 +221,7 @@ public class MixService extends Service {
         player.setOnCompletionListener(mp -> {
             endMs = 0;  // 先清掉，免得 endTick 在 next() 生效前再切一次
             why = "播完";
+            report(cur);
             next(false);
         });
         player.setOnErrorListener((mp, what, extra) -> {
@@ -607,6 +624,8 @@ public class MixService extends Service {
                 t.singer = j.getString("singer");
                 t.cover = j.optString("cover");
                 t.kind = j.getString("kind");
+                t.id = j.optString("id");
+                t.albumId = j.optString("albumId");
                 if (t.mid.isEmpty()) throw new Exception();
                 if (!"fav".equals(t.kind) && !"radar".equals(t.kind)) throw new Exception();
                 list.add(t);
@@ -663,6 +682,8 @@ public class MixService extends Service {
                     j.put("singer", t.singer);
                     j.put("cover", t.cover);
                     j.put("kind", t.kind);
+                    j.put("id", t.id);
+                    j.put("albumId", t.albumId);
                     a.put(j);
                 }
             }
@@ -915,6 +936,35 @@ public class MixService extends Service {
         return null;
     }
 
+    /** 播满 30 秒或播完时调：写一条 QQ 音乐「最近播放」。同一首 5 分钟内只报 1 次，失败不重试。 */
+    void report(Track t) {
+        if (t == null) return;
+        if (reportedThis) {
+            L.i("report skip " + t.mid + " already");
+            return;
+        }
+        reportedThis = true;
+        if (t.id.isEmpty() || t.albumId.isEmpty() || t.id.equals("0") || t.albumId.equals("0")) {
+            L.i("report skip " + t.mid + " no id");
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        Long last = reportedAt.get(t.mid);
+        if (last != null && now - last < REPORT_GAP_MS) {
+            L.i("report dup " + t.mid + " " + (now - last) / 1000 + "s ago");
+            return;
+        }
+        reportedAt.put(t.mid, now);
+        repEx.execute(() -> {
+            try {
+                Qq.report(t.id, t.albumId);
+                L.i("report ok " + t.mid + " id=" + t.id + " album=" + t.albumId);
+            } catch (Exception e) {
+                L.i("report fail " + t.mid + " " + e.getMessage());
+            }
+        });
+    }
+
     @Override
     public void onDestroy() {
         writeState();
@@ -925,6 +975,7 @@ public class MixService extends Service {
         ex.shutdownNow();
         imgEx.shutdownNow();
         lrcEx.shutdownNow();
+        repEx.shutdownNow();
         dlEx.shutdownNow();
         analyzer.stop();
         if (dp != null) dp.release();

@@ -10,10 +10,13 @@ public class Track {
     public String cover = "";
     public String url = "";
     public String kind = "";
+    public String id = "";       // 歌曲数字 ID，上报最近播放用
+    public String albumId = "";  // 专辑数字 ID，上报最近播放用
 
     public static Track from(JSONObject t) {
         Track x = new Track();
         x.mid = t.optString("mid");
+        x.id = t.optString("id");
         x.name = t.optString("name", t.optString("title"));
 
         StringBuilder sb = new StringBuilder();
@@ -28,6 +31,7 @@ public class Track {
 
         JSONObject al = t.optJSONObject("album");
         String amid = al == null ? "" : al.optString("mid");
+        x.albumId = al == null ? "" : al.optString("id");
         if (!amid.isEmpty()) {
             x.cover = "https://y.gtimg.cn/music/photo_new/T002R300x300M000" + amid + ".jpg";
         }

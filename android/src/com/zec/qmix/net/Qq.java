@@ -111,6 +111,7 @@ public class Qq {
         comm.put("outCharset", "utf-8");
         comm.put("notice", 0);
         comm.put("need_new_code", 1);
+        comm.put("authst", SKEY);
 
         JSONObject req = new JSONObject();
         req.put("module", module);
@@ -223,6 +224,23 @@ public class Qq {
             return false;
         } finally {
             if (c != null) c.disconnect();
+        }
+    }
+
+    /** 写一条「最近播放」。失败抛异常，异常信息是原因。要在后台线程调。 */
+    public static void report(String id, String albumId) throws Exception {
+        JSONObject x = new JSONObject();
+        x.put("id", id);
+        x.put("type", 2);
+        x.put("lastTime", System.currentTimeMillis() / 1000);
+        x.put("listenCnt", 1);
+        x.put("auxillaryID", albumId);
+        JSONObject p = new JSONObject();
+        p.put("data", new JSONArray().put(x));
+        JSONObject d = call("music.musicasset.PlayRecentlyWrite", "ReportPlayRecentlyInfo", p);
+        JSONArray tl = d.optJSONArray("timeList");
+        if (d.optInt("ret", -1) != 0 || tl == null || tl.length() == 0) {
+            throw new Exception("ret=" + d.optInt("ret", -1) + " timeList=" + tl);
         }
     }
 
