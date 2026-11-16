@@ -107,13 +107,16 @@ public class MixService extends Service {
         }
     };
 
+    // 车机歌词提前这么多毫秒显示：每秒才查一次，车机刷新也慢，不提前的话总是唱完了才看到
+    static final int LYRIC_AHEAD_MS = 3000;
+
     // 每秒对一次歌词行，行变了才更新 metadata（车机靠它显示歌词）
     final Runnable lyricTick = new Runnable() {
         @Override public void run() {
             if (ready && lrcT != null) {
                 int p = player.getCurrentPosition();
                 int i = lrcT.length - 1;
-                while (i >= 0 && lrcT[i] > p) i--;
+                while (i >= 0 && lrcT[i] > p + LYRIC_AHEAD_MS) i--;
                 if (i != lrcIdx) {
                     lrcIdx = i;
                     if (i >= 0) Log.i("qmix", "lyric " + cur.mid + " line=" + i + " t=" + lrcT[i] + " pos=" + p + " " + lrcL[i]);
