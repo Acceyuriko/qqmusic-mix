@@ -29,6 +29,7 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -58,6 +59,8 @@ public class MixService extends Service {
     public volatile boolean playing;
     volatile boolean ready;
     volatile boolean loading;  // 正在换地址 / prepare，还没好
+    volatile boolean loaded;   // 收藏歌单加载成功过
+    volatile String loadErr = "";
     volatile int pos0;   // 恢复出来的进度，没 prepare 时给界面用
     volatile int dur0;   // 恢复出来的时长，没 prepare 时给界面用
     int pendSeek;        // prepare 完成后先跳到这
@@ -158,6 +161,7 @@ public class MixService extends Service {
             }
             applyLevel(mp, resumed);
             loading = false;
+            status = "";  // 「加载中...」等提示到真正能播时才清
             if (playing) mp.start();  // 加载中点了暂停就不开播
             notifyUpdate();
             prefetch();
@@ -190,15 +194,10 @@ public class MixService extends Service {
         ex.execute(() -> {
             boolean restored = restore();
             if (restored) notifyUpdate();
-            try {
-                mixer.load();
-            } catch (Exception e) {
-                status = "加载收藏失败，请检查 cookie";
-                notifyUpdate();
-                return;
-            }
+            if (!loadFavs()) return;
             if (restored) {
-                // 等用户点播放
+                status = "";  // 等用户点播放；清掉 loadFavs 的「加载中...」
+                notifyUpdate();
             } else {
                 refill();
                 save();
@@ -211,6 +210,24 @@ public class MixService extends Service {
     }
 
     // ---------- 歌单 ----------
+
+    /** 加载收藏歌单（ex 线程）。失败时分清是没网还是 cookie 不行，提示不一样。 */
+    boolean loadFavs() {
+        status = "加载中...";  // 重试时先盖掉上次的失败提示
+        notifyUpdate();
+        try {
+            mixer.load();
+            loaded = true;
+            return true;
+        } catch (Exception e) {
+            // 没网是 IOException（解析不了域名、连不上、超时）；别的（接口报错）当 cookie / 登录问题
+            loadErr = e instanceof IOException ? "网络不通，联网后按播放重试" : "加载收藏失败，请重新登录（长按歌名）";
+            Log.i("qmix", "load favs fail " + e.getClass().getSimpleName());
+        }
+        status = loadErr;
+        notifyUpdate();
+        return false;
+    }
 
     void refill() {
         List<Track> add = new ArrayList<>();
@@ -227,7 +244,7 @@ public class MixService extends Service {
         synchronized (queue) {
             queue.addAll(add);
             if (queue.isEmpty()) {
-                status = "没歌了";
+                status = loaded ? "没歌了" : loadErr;
                 return;
             }
             cur = queue.get(0);
@@ -246,7 +263,7 @@ public class MixService extends Service {
             t = queue.isEmpty() ? null : queue.get(0);
         }
         if (t == null) {
-            status = "没歌了";
+            status = loaded ? "没歌了" : loadErr;
             loading = false;  // 上一首失败跳过来时 loading 还是 true，不清掉的话点播放会卡在「在播」
             playing = false;  // 没歌可放，显示「播放」、状态 PAUSED
             main.post(() -> player.reset());  // 停掉上一首，不然它会接着放完
@@ -562,6 +579,7 @@ public class MixService extends Service {
     void next(boolean failed) {
         if (!failed) playing = true;
         ex.execute(() -> {
+            if (!loaded) loadFavs();  // 开机没网时歌单没加载，按下一首再试
             ready = false;
             pos0 = 0;
             dur0 = 0;
@@ -599,13 +617,17 @@ public class MixService extends Service {
 
     void resume() {
         if (!ready) {
-            if (cur == null) return;
+            if (cur == null && loaded) return;
             playing = true;
             notifyUpdate();
             // 正在加载就等它加载完自己开播；没在加载（刚恢复出来）才开始加载
             if (!loading) {
                 final int at = pos0;
-                ex.execute(() -> playFirst(at));
+                ex.execute(() -> {
+                    // 开机没网时歌单没加载，按播放再试；队列里还有歌（恢复出来的）就先放，不等补满
+                    if (!loaded && loadFavs() && queue.isEmpty()) refill();
+                    playFirst(at);
+                });
             }
             return;
         }
