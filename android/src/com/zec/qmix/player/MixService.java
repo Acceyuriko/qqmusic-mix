@@ -57,6 +57,7 @@ public class MixService extends Service {
     public volatile String status = "加载中...";
     public volatile boolean playing;
     volatile boolean ready;
+    volatile boolean loading;  // 正在换地址 / prepare，还没好
     volatile int pos0;   // 恢复出来的进度，没 prepare 时给界面用
     volatile int dur0;   // 恢复出来的时长，没 prepare 时给界面用
     int pendSeek;        // prepare 完成后先跳到这
@@ -156,8 +157,8 @@ public class MixService extends Service {
                 writeState();
             }
             applyLevel(mp, resumed);
-            mp.start();
-            playing = true;
+            loading = false;
+            if (playing) mp.start();  // 加载中点了暂停就不开播
             notifyUpdate();
             prefetch();
         });
@@ -169,7 +170,7 @@ public class MixService extends Service {
             // 坏的缓存文件删掉，下次重新下载。播的是流时这个文件不存在，delete 无副作用。
             Track t = cur;
             if (t != null) new File(audioDir, t.mid).delete();
-            next();
+            next(true);
             return true;
         });
 
@@ -246,9 +247,14 @@ public class MixService extends Service {
         }
         if (t == null) {
             status = "没歌了";
+            loading = false;  // 上一首失败跳过来时 loading 还是 true，不清掉的话点播放会卡在「在播」
+            playing = false;  // 没歌可放，显示「播放」、状态 PAUSED
+            main.post(() -> player.reset());  // 停掉上一首，不然它会接着放完
+            notifyUpdate();
             return;
         }
         ready = false;
+        loading = true;
         pos0 = seek;
         if (seek == 0) dur0 = 0;
         final Track ft = t;
@@ -264,8 +270,9 @@ public class MixService extends Service {
             if (u != null) ft.url = u;
         }
         if (!hit && ft.url.isEmpty()) {
+            Log.i("qmix", "play fail " + ft.mid);
             status = "播放失败";
-            next();
+            next(true);
             return;
         }
         final String src = hit ? local.getPath() : ft.url;
@@ -288,7 +295,7 @@ public class MixService extends Service {
                 player.prepareAsync();
             } catch (Exception e) {
                 status = "播放失败";
-                next();
+                next(true);
             }
         });
     }
@@ -487,18 +494,20 @@ public class MixService extends Service {
             return false;
         }
 
-        String u = null;
-        try {
-            Qq.init(this);
-            u = Qq.url(list.get(0).mid);
-        } catch (Exception ignored) {
+        // 当前歌有本地缓存就不用换地址（断网也能恢复）；没缓存才要拿到地址
+        if (!new File(audioDir, list.get(0).mid).exists()) {
+            String u = null;
+            try {
+                Qq.init(this);
+                u = Qq.url(list.get(0).mid);
+            } catch (Exception ignored) {
+            }
+            if (u == null) {
+                dropSaved();
+                return false;
+            }
+            list.get(0).url = u;
         }
-        if (u == null) {
-            dropSaved();
-            return false;
-        }
-
-        list.get(0).url = u;
         synchronized (queue) {
             queue.addAll(list);
             cur = queue.get(0);
@@ -546,11 +555,20 @@ public class MixService extends Service {
     }
 
     public void next() {
+        next(false);
+    }
+
+    /** failed = 这首放不了：不进历史栈（不然按上一首又落到它），也不改用户的播放/暂停选择。 */
+    void next(boolean failed) {
+        if (!failed) playing = true;
         ex.execute(() -> {
             ready = false;
             pos0 = 0;
             dur0 = 0;
-            if (!queue.isEmpty()) stack.add(queue.remove(0));
+            if (!queue.isEmpty()) {
+                Track t = queue.remove(0);
+                if (!failed) stack.add(t);
+            }
             refill();
             playFirst();
             save();
@@ -560,6 +578,7 @@ public class MixService extends Service {
     public void prev() {
         ex.execute(() -> {
             if (stack.isEmpty()) return;
+            playing = true;
             synchronized (queue) {
                 if (queue.isEmpty()) return;
                 Track old = queue.get(0);
@@ -581,8 +600,13 @@ public class MixService extends Service {
     void resume() {
         if (!ready) {
             if (cur == null) return;
-            final int at = pos0;
-            ex.execute(() -> playFirst(at));
+            playing = true;
+            notifyUpdate();
+            // 正在加载就等它加载完自己开播；没在加载（刚恢复出来）才开始加载
+            if (!loading) {
+                final int at = pos0;
+                ex.execute(() -> playFirst(at));
+            }
             return;
         }
         main.post(() -> {
@@ -594,12 +618,12 @@ public class MixService extends Service {
 
     void pause() {
         main.post(() -> {
+            playing = false;  // 加载中也记下，加载完不开播
             if (ready) {
                 player.pause();
-                playing = false;
                 writeState();
-                notifyUpdate();
             }
+            notifyUpdate();
         });
     }
 
