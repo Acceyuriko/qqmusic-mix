@@ -3,6 +3,7 @@ package com.zec.qmix.player;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import com.zec.qmix.L;
 import com.zec.qmix.model.Track;
 import com.zec.qmix.net.Qq;
 
@@ -40,6 +41,15 @@ public class Mixer {
         return s.replaceAll("[（(【\\[].*?[）)】\\]]", "")
                 .replaceAll("[\\s\\-_·,.!?，。！？、'\"“”‘’:：]", "")
                 .toLowerCase();
+    }
+
+    /** 和 avoid 里任何一首 mid 相同，或规范化歌名相同，就算重复。 */
+    static boolean dup(Track t, List<Track> avoid) {
+        String n = norm(t.name);
+        for (Track x : avoid) {
+            if (x.mid.equals(t.mid) || norm(x.name).equals(n)) return true;
+        }
+        return false;
     }
 
     void load() throws Exception {
@@ -128,7 +138,8 @@ public class Mixer {
         return null;
     }
 
-    Track buildOne() throws Exception {
+    /** avoid = 队列里已有的和最近播过的歌；抽到重复的就换一首同类型的。 */
+    Track buildOne(List<Track> avoid) throws Exception {
         String kind = PATTERN[(pos++) % PATTERN.length];
         for (int i = 0; i < 6; i++) {
             Track t;
@@ -138,6 +149,10 @@ public class Mixer {
                 continue;
             }
             if (t == null) continue;
+            if (dup(t, avoid)) {
+                L.i("refill skip dup " + kind + " " + t.mid + " " + t.name);
+                continue;
+            }
 
             String u;
             try {
@@ -154,6 +169,7 @@ public class Mixer {
             }
             t.url = u;
             t.kind = kind;
+            L.i("refill add " + kind + " " + t.mid + " " + t.name);
             return t;
         }
         return null;

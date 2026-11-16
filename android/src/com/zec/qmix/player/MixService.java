@@ -113,6 +113,7 @@ public class MixService extends Service {
     File audioDir;
     AudioAnalyzer analyzer;
 
+    static final int NO_REPEAT = 20;  // 最近播过的这么多首（含正在播的）不重复
     static final long KEEP_MS = 360L * 24 * 3600 * 1000;
     static final long MIN_FREE = 500L * 1024 * 1024;
     final Handler main = new Handler(Looper.getMainLooper());
@@ -287,15 +288,19 @@ public class MixService extends Service {
 
     void refill() {
         List<Track> add = new ArrayList<>();
+        // 新补的歌不能和队列里的、最近播过的 NO_REPEAT 首（队首正在播的算 1 首）重复
+        List<Track> avoid = new ArrayList<>(queue);
+        avoid.addAll(stack.subList(Math.max(0, stack.size() - (NO_REPEAT - 1)), stack.size()));
         while (queue.size() + add.size() < 7) {
             Track t;
             try {
-                t = mixer.buildOne();
+                t = mixer.buildOne(avoid);
             } catch (Exception e) {
                 break;
             }
             if (t == null) break;
             add.add(t);
+            avoid.add(t);
         }
         synchronized (queue) {
             queue.addAll(add);
