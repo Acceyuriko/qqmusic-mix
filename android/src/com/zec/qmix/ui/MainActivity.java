@@ -16,6 +16,7 @@ import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
+import com.zec.qmix.L;
 import com.zec.qmix.R;
 import com.zec.qmix.model.Track;
 import com.zec.qmix.net.Qq;
@@ -40,6 +41,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        L.init(this);
         setContentView(R.layout.activity_main);
 
         cover = findViewById(R.id.cover);

@@ -1,7 +1,8 @@
 package com.zec.qmix.net;
 
 import android.content.Context;
-import android.util.Log;
+
+import com.zec.qmix.L;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -198,7 +199,7 @@ public class Qq {
             if (purl.isEmpty()) return null;
             String u = d.getJSONArray("sip").getString(0) + purl;
             if (!reachable(u)) return null;
-            Log.i("qmix", "url " + mid + " " + fileMid + " " + prefix);
+            L.i("url " + mid + " " + fileMid + " " + prefix);
             return u;
         } catch (Exception e) {
             return null;

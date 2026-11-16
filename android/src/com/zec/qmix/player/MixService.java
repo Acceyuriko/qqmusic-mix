@@ -18,8 +18,8 @@ import android.media.session.PlaybackState;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.util.Log;
 
+import com.zec.qmix.L;
 import com.zec.qmix.model.Track;
 import com.zec.qmix.net.Qq;
 import com.zec.qmix.ui.MainActivity;
@@ -61,6 +61,7 @@ public class MixService extends Service {
     volatile boolean loading;  // 正在换地址 / prepare，还没好
     volatile boolean loaded;   // 收藏歌单加载成功过
     volatile String loadErr = "";
+    volatile String why = "恢复";  // 下一次开播的原因，写进播放记录
     volatile int pos0;   // 恢复出来的进度，没 prepare 时给界面用
     volatile int dur0;   // 恢复出来的时长，没 prepare 时给界面用
     int pendSeek;        // prepare 完成后先跳到这
@@ -97,10 +98,11 @@ public class MixService extends Service {
             if (ready && playing && endMs > 0) {
                 int p = player.getCurrentPosition();
                 if (p >= endMs) {
-                    Log.i("qmix", "trim end " + (cur == null ? "" : cur.mid) + " pos=" + p + " end=" + endMs);
+                    L.i("trim end " + (cur == null ? "" : cur.mid) + " pos=" + p + " end=" + endMs);
                     endMs = 0;
                     player.pause();  // 先停，不然放到文件真结尾时 onCompletion 会再切一次
-                    next();
+                    why = "结尾裁剪";
+                    next(false);
                 }
             }
             main.postDelayed(this, 200);
@@ -119,7 +121,7 @@ public class MixService extends Service {
                 while (i >= 0 && lrcT[i] > p + LYRIC_AHEAD_MS) i--;
                 if (i != lrcIdx) {
                     lrcIdx = i;
-                    if (i >= 0) Log.i("qmix", "lyric " + cur.mid + " line=" + i + " t=" + lrcT[i] + " pos=" + p + " " + lrcL[i]);
+                    if (i >= 0) L.i("lyric " + cur.mid + " line=" + i + " t=" + lrcT[i] + " pos=" + p + " " + lrcL[i]);
                     updateSession();
                 }
             }
@@ -137,6 +139,7 @@ public class MixService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        L.init(this);
         sp = getSharedPreferences("qmix", 0);
         inst = this;
         audioDir = new File(getFilesDir(), "audio");
@@ -171,12 +174,14 @@ public class MixService extends Service {
         });
         player.setOnCompletionListener(mp -> {
             endMs = 0;  // 先清掉，免得 endTick 在 next() 生效前再切一次
-            next();
+            why = "播完";
+            next(false);
         });
         player.setOnErrorListener((mp, what, extra) -> {
             // 坏的缓存文件删掉，下次重新下载。播的是流时这个文件不存在，delete 无副作用。
             Track t = cur;
             if (t != null) new File(audioDir, t.mid).delete();
+            why = "失败跳过";
             next(true);
             return true;
         });
@@ -225,7 +230,7 @@ public class MixService extends Service {
         } catch (Exception e) {
             // 没网是 IOException（解析不了域名、连不上、超时）；别的（接口报错）当 cookie / 登录问题
             loadErr = e instanceof IOException ? "网络不通，联网后按播放重试" : "加载收藏失败，请重新登录（长按歌名）";
-            Log.i("qmix", "load favs fail " + e.getClass().getSimpleName());
+            L.i("load favs fail " + e.getClass().getSimpleName());
         }
         status = loadErr;
         notifyUpdate();
@@ -290,13 +295,15 @@ public class MixService extends Service {
             if (u != null) ft.url = u;
         }
         if (!hit && ft.url.isEmpty()) {
-            Log.i("qmix", "play fail " + ft.mid);
+            L.i("play fail " + ft.mid);
             status = "播放失败";
+            why = "失败跳过";
             next(true);
             return;
         }
         final String src = hit ? local.getPath() : ft.url;
-        Log.i("qmix", (hit ? "play local " : "play stream ") + ft.mid);
+        L.i((hit ? "play local " : "play stream ") + ft.mid);
+        L.i("play why=" + why + " " + ft.mid + " " + ft.name + " - " + ft.singer);  // 播放记录
         if (hit) analyzer.analyze(ft.mid);
         final double[] lv = hit ? levelOf(ft.mid, local) : null;
         final int at = seek;
@@ -315,6 +322,7 @@ public class MixService extends Service {
                 player.prepareAsync();
             } catch (Exception e) {
                 status = "播放失败";
+                why = "失败跳过";
                 next(true);
             }
         });
@@ -351,7 +359,7 @@ public class MixService extends Service {
                     }
                 }
             } catch (Exception e) {
-                Log.i("qmix", "lyric fail " + mid + " " + e);
+                L.i("lyric fail " + mid + " " + e);
             }
             Collections.sort(ts, (a, b) -> Long.compare(a[0], b[0]));
             long[] t = new long[ts.size()];
@@ -360,7 +368,7 @@ public class MixService extends Service {
                 t[i] = ts.get(i)[0];
                 l[i] = ls.get((int) ts.get(i)[1]);
             }
-            Log.i("qmix", "lyric " + mid + " lines=" + t.length);
+            L.i("lyric " + mid + " lines=" + t.length);
             main.post(() -> {
                 if (cur == null || !cur.mid.equals(mid) || t.length == 0) return;
                 lrcT = t;
@@ -393,7 +401,7 @@ public class MixService extends Service {
         double[] lv = pendLevel;
         if (lv == null) {
             mp.setVolume(1f, 1f);
-            Log.i("qmix", "level " + mid + " none");
+            L.i("level " + mid + " none");
             return;
         }
         if (!resumed && lv[0] > 0) mp.seekTo((int) lv[0]);
@@ -409,7 +417,7 @@ public class MixService extends Service {
                 how = "LoudnessEnhancer targetGain=" + (int) (gainDb * 100) + "mB";
             } catch (RuntimeException e) {
                 // 设备不支持或资源不够时构造会抛，不加增益照常播
-                Log.i("qmix", "level " + mid + " enhancer fail " + e);
+                L.i("level " + mid + " enhancer fail " + e);
                 how = "no gain";
             }
         } else {
@@ -417,7 +425,7 @@ public class MixService extends Service {
             mp.setVolume(vol, vol);
             how = "setVolume " + String.format(java.util.Locale.US, "%.3f", vol);
         }
-        Log.i("qmix", "level " + mid + " start=" + (resumed ? "skip(resume)" : String.valueOf((int) lv[0]))
+        L.i("level " + mid + " start=" + (resumed ? "skip(resume)" : String.valueOf((int) lv[0]))
                 + " end=" + endMs + " loud=" + lv[2] + " gainDb=" + String.format(java.util.Locale.US, "%.1f", gainDb) + " " + how);
     }
 
@@ -429,7 +437,7 @@ public class MixService extends Service {
         if (fs == null) return;
         long now = System.currentTimeMillis();
         for (File f : fs) {
-            if ((f.getName().endsWith(".part") || now - f.lastModified() >= KEEP_MS) && f.delete()) Log.i("qmix", "cache expired " + f.getName());
+            if ((f.getName().endsWith(".part") || now - f.lastModified() >= KEEP_MS) && f.delete()) L.i("cache expired " + f.getName());
         }
     }
 
@@ -449,7 +457,7 @@ public class MixService extends Service {
                 return;
             }
             if (audioDir.getUsableSpace() < MIN_FREE) {
-                Log.i("qmix", "cache skip low space " + mid);
+                L.i("cache skip low space " + mid);
                 return;
             }
             File part = new File(audioDir, mid + ".part");
@@ -470,11 +478,11 @@ public class MixService extends Service {
                     }
                 }
                 if (!part.renameTo(f)) throw new Exception("rename");
-                Log.i("qmix", "cache saved " + mid + " " + f.length());
+                L.i("cache saved " + mid + " " + f.length());
                 analyzer.analyze(mid);
             } catch (Exception e) {
                 part.delete();
-                Log.i("qmix", "cache fail " + mid + " " + e);
+                L.i("cache fail " + mid + " " + e);
             } finally {
                 if (c != null) c.disconnect();
             }
@@ -574,13 +582,19 @@ public class MixService extends Service {
         main.post(this::writeState);
     }
 
+    /** 用户按的下一首（界面、通知栏、车机/蓝牙按键）。 */
     public void next() {
+        why = "用户下一首";
         next(false);
     }
 
     /** failed = 这首放不了：不进历史栈（不然按上一首又落到它），也不改用户的播放/暂停选择。 */
     void next(boolean failed) {
         if (!failed) playing = true;
+        // 马上标成「换歌中」：不然切歌后台还在补歌时来一个「播放」（车机常发），
+        // resume() 会对播完的旧歌 start()（旧歌从头再放）或再排一次 playFirst（新歌从头再放）
+        ready = false;
+        loading = true;
         ex.execute(() -> {
             if (!loaded) loadFavs();  // 开机没网时歌单没加载，按下一首再试
             ready = false;
@@ -608,6 +622,8 @@ public class MixService extends Service {
                 queue.add(1, old);
             }
             ready = false;
+            loading = true;
+            why = "上一首";
             pos0 = 0;
             dur0 = 0;
             refill();
@@ -626,6 +642,7 @@ public class MixService extends Service {
             // 正在加载就等它加载完自己开播；没在加载（刚恢复出来）才开始加载
             if (!loading) {
                 final int at = pos0;
+                why = "恢复";
                 ex.execute(() -> {
                     // 开机没网时歌单没加载，按播放再试；队列里还有歌（恢复出来的）就先放，不等补满
                     if (!loaded && loadFavs() && queue.isEmpty()) refill();
@@ -647,6 +664,8 @@ public class MixService extends Service {
             if (ready) {
                 player.pause();
                 writeState();
+            } else if (player.isPlaying()) {
+                player.pause();  // 换歌中（补歌、准备新歌）旧歌还在响，也停掉
             }
             notifyUpdate();
         });

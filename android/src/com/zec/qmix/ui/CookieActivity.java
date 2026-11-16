@@ -3,13 +3,13 @@ package com.zec.qmix.ui;
 import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
-import android.util.Log;
 import android.webkit.CookieManager;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.zec.qmix.L;
 import com.zec.qmix.R;
 import com.zec.qmix.net.Qq;
 import com.zec.qmix.player.MixService;
@@ -33,6 +33,7 @@ public class CookieActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        L.init(this);  // 系统可能单独恢复这个页面，这时 MainActivity / MixService 还没初始化 L
         setContentView(R.layout.activity_cookie);
         web = findViewById(R.id.web);
         msg = findViewById(R.id.msg);
@@ -62,7 +63,7 @@ public class CookieActivity extends Activity {
         if (c == null || !(c.contains("qqmusic_key=") || c.contains("qm_keyst="))) return;
         checking = true;
         cm.removeAllCookies(v -> cm.flush());
-        Log.i("qmix", "login cookie has=true len=" + c.length());
+        L.i("login cookie has=true len=" + c.length());
         msg.setText("验证中...");
         new Thread(() -> {
             boolean ok = Qq.check(c);

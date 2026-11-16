@@ -5,7 +5,8 @@ import android.content.SharedPreferences;
 import android.media.MediaCodec;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
-import android.util.Log;
+
+import com.zec.qmix.L;
 
 import java.io.File;
 import java.nio.ByteOrder;
@@ -44,18 +45,18 @@ public class AudioAnalyzer {
             if (!f.exists()) return;
             String old = sp.getString(mid, "");
             if (old.endsWith("," + f.length())) {
-                Log.i("qmix", "analyze cached " + mid + " " + old);
+                L.i("analyze cached " + mid + " " + old);
                 return;
             }
             long t0 = System.currentTimeMillis();
             try {
                 String v = run(f);
                 sp.edit().putString(mid, v).apply();
-                Log.i("qmix", "analyze done " + mid + " " + v + " ms=" + (System.currentTimeMillis() - t0));
+                L.i("analyze done " + mid + " " + v + " ms=" + (System.currentTimeMillis() - t0));
             } catch (Exception e) {
                 // 解码失败也记下，同一个文件不再重试；被停掉的不算失败
                 if (!Thread.currentThread().isInterrupted()) sp.edit().putString(mid, "fail," + f.length()).apply();
-                Log.i("qmix", "analyze fail " + mid + " " + e);
+                L.i("analyze fail " + mid + " " + e);
             }
         });
     }
@@ -153,7 +154,7 @@ public class AudioAnalyzer {
         int start = Math.max(0, rawStart - PRE_MS);
         int end = Math.min(total, rawEnd + POST_MS);
         double loud = 10 * Math.log10(loudSum / loudCnt);
-        Log.i("qmix", "analyze raw " + f.getName() + " start=" + rawStart + " end=" + rawEnd + " total=" + total);
+        L.i("analyze raw " + f.getName() + " start=" + rawStart + " end=" + rawEnd + " total=" + total);
         return start + "," + end + "," + String.format(Locale.US, "%.1f", loud) + "," + f.length();
     }
 }
