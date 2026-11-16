@@ -31,6 +31,7 @@
 
         <activity
             android:name=".ui.CookieActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|keyboardHidden"
             android:exported="false" />
 
         <service

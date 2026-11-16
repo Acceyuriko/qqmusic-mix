@@ -35,10 +35,6 @@ public class Qq {
         return use(s);
     }
 
-    public static String cookie() {
-        return COOKIE;
-    }
-
     /** 换成这串 cookie。缺 uin 或 qm_keyst 就不换，返回 false。 */
     static boolean use(String s) {
         String u = field(s, "uin");

@@ -3,50 +3,20 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#111111"
-    android:orientation="vertical"
-    android:padding="20dp">
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Cookie"
-        android:textColor="#eeeeee"
-        android:textSize="22sp" />
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:text="粘贴整串 cookie（uin=...; qm_keyst=...; ...）"
-        android:textColor="#999999"
-        android:textSize="13sp" />
-
-    <EditText
-        android:id="@+id/cookie"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:background="#222222"
-        android:gravity="top"
-        android:importantForAutofill="no"
-        android:inputType="textMultiLine|textNoSuggestions"
-        android:minLines="8"
-        android:padding="10dp"
-        android:textColor="#eeeeee"
-        android:textSize="13sp" />
-
-    <Button
-        android:id="@+id/save"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="保存" />
+    android:orientation="vertical">
 
     <TextView
         android:id="@+id/msg"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
+        android:padding="12dp"
+        android:text="用 QQ 号登录 QQ 音乐"
         android:textColor="#eeeeee"
         android:textSize="16sp" />
+
+    <WebView
+        android:id="@+id/web"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
 </LinearLayout>
