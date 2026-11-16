@@ -5,11 +5,16 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.icu.text.BreakIterator;
 import android.media.AudioAttributes;
+import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.MediaPlayer;
 import android.media.audiofx.LoudnessEnhancer;
@@ -37,6 +42,7 @@ import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
@@ -69,8 +75,9 @@ public class MixService extends Service {
     int endMs;           // 播到这里就切下一首，0 = 不管
     LoudnessEnhancer le;
     long[] lrcT;         // 当前歌每行歌词的时间（毫秒），没歌词是 null
-    String[] lrcL;
+    String[][] lrcS;     // 每行切好的段（车机标题行只放得下 10 个字）
     int lrcIdx = -1;     // 当前显示的是第几行，-1 = 还没唱到 / 没歌词
+    int lrcSeg = -1;     // 当前显示的是这一行的第几段
 
     static final double TARGET_DB = -16;
 
@@ -110,22 +117,36 @@ public class MixService extends Service {
     };
 
     // 车机歌词提前这么多毫秒显示：每秒才查一次，车机刷新也慢，不提前的话总是唱完了才看到
-    static final int LYRIC_AHEAD_MS = 3000;
+    static final int LYRIC_AHEAD_MS = 1000;
+    // 车机标题行最多显示 10 个字，长歌词行切成几段
+    static final int SEG_MAX = 10;
 
     // 每秒对一次歌词行，行变了才更新 metadata（车机靠它显示歌词）
     final Runnable lyricTick = new Runnable() {
         @Override public void run() {
             if (ready && lrcT != null) {
                 int p = player.getCurrentPosition();
+                long q = p + LYRIC_AHEAD_MS;
                 int i = lrcT.length - 1;
-                while (i >= 0 && lrcT[i] > p + LYRIC_AHEAD_MS) i--;
-                if (i != lrcIdx) {
+                while (i >= 0 && lrcT[i] > q) i--;
+                long[] sg = i < 0 ? new long[]{-1, 0} : segAt(i, q);
+                if (i != lrcIdx || sg[0] != lrcSeg) {
                     lrcIdx = i;
-                    if (i >= 0) L.i("lyric " + cur.mid + " line=" + i + " t=" + lrcT[i] + " pos=" + p + " " + lrcL[i]);
+                    lrcSeg = (int) sg[0];
+                    if (i >= 0) L.i("lyric " + cur.mid + " line=" + i + " seg=" + (lrcSeg + 1) + "/" + lrcS[i].length
+                            + " t=" + sg[1] + " pos=" + p + " " + lrcS[i][lrcSeg]);
                     updateSession();
                 }
             }
             main.postDelayed(this, 1000);
+        }
+    };
+
+    // 蓝牙耳机 / 车机断开（声音要从手机外放出来）时暂停
+    final BroadcastReceiver noisy = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            L.i("audio becoming noisy -> pause");
+            pause();
         }
     };
 
@@ -214,6 +235,7 @@ public class MixService extends Service {
         });
         main.postDelayed(saveTick, 2000);
         main.post(endTick);
+        registerReceiver(noisy, new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
         main.post(lyricTick);
     }
 
@@ -335,8 +357,9 @@ public class MixService extends Service {
     /** 主线程调：先清掉上一首的歌词，再到后台拿这首的。拿不到就当没歌词。 */
     void loadLyric(String mid) {
         lrcT = null;
-        lrcL = null;
+        lrcS = null;
         lrcIdx = -1;
+        lrcSeg = -1;
         lrcEx.execute(() -> {
             List<long[]> ts = new ArrayList<>();   // {时间, 行号}
             List<String> ls = new ArrayList<>();
@@ -368,14 +391,70 @@ public class MixService extends Service {
                 t[i] = ts.get(i)[0];
                 l[i] = ls.get((int) ts.get(i)[1]);
             }
+            String[][] segs = new String[l.length][];
+            for (int i = 0; i < l.length; i++) {
+                segs[i] = split(l[i]).toArray(new String[0]);
+                if (segs[i].length > 1) L.i("lyric split line=" + i + " " + String.join(" | ", segs[i]));
+            }
             L.i("lyric " + mid + " lines=" + t.length);
             main.post(() -> {
                 if (cur == null || !cur.mid.equals(mid) || t.length == 0) return;
                 lrcT = t;
-                lrcL = l;
+                lrcS = segs;
                 lrcIdx = -1;
+                lrcSeg = -1;
             });
         });
+    }
+
+    /** 把一行歌词切成每段不超过 SEG_MAX 个字；按词切，不切开词（单个词太长才硬切）。 */
+    static List<String> split(String s) {
+        List<String> out = new ArrayList<>();
+        if (s.length() <= SEG_MAX) {
+            out.add(s);
+            return out;
+        }
+        BreakIterator bi = BreakIterator.getWordInstance(Locale.CHINESE);
+        bi.setText(s);
+        StringBuilder cur = new StringBuilder();
+        for (int a = bi.first(), b = bi.next(); b != BreakIterator.DONE; a = b, b = bi.next()) {
+            String w = s.substring(a, b);
+            if (cur.length() + w.length() > SEG_MAX) {
+                addSeg(out, cur);
+                while (w.trim().length() > SEG_MAX) {
+                    out.add(w.trim().substring(0, SEG_MAX));
+                    w = w.trim().substring(SEG_MAX);
+                }
+            }
+            cur.append(w);
+        }
+        addSeg(out, cur);
+        // 整行都是标点（如 "------------"）时去完就空了；保底留一段，不然段号是 -1 会越界
+        if (out.isEmpty()) out.add(s.substring(0, Math.min(s.length(), SEG_MAX)));
+        return out;
+    }
+
+    static void addSeg(List<String> out, StringBuilder cur) {
+        // 去掉开头的空格和标点（中英文标点、撇号），段开头是「，」「'」不好看
+        String seg = cur.toString().trim().replaceFirst("^[\\p{P}\\s]+", "");
+        if (!seg.isEmpty()) out.add(seg);
+        cur.setLength(0);
+    }
+
+    /** 第 i 行里位置 q 落在哪一段：每段时长 = 行时长 × 段字数 / 行总字数。返回 {段号, 段开始时间}。 */
+    long[] segAt(int i, long q) {
+        String[] segs = lrcS[i];
+        long end = i + 1 < lrcT.length ? lrcT[i + 1] : duration();
+        long lineMs = Math.max(0, end - lrcT[i]);
+        int total = 0;
+        for (String g : segs) total += g.length();
+        long start = lrcT[i];
+        for (int k = 0; k < segs.length - 1; k++) {
+            long d = lineMs * segs[k].length() / total;
+            if (q < start + d) return new long[]{k, start};
+            start += d;
+        }
+        return new long[]{segs.length - 1, start};
     }
 
     // ---------- 掐头去尾、音量均衡 ----------
@@ -759,11 +838,12 @@ public class MixService extends Service {
         session.setPlaybackState(sb.build());
 
         if (t != null) {
-            // 车机只显示标题和艺术家：标题放「歌名 - 歌手」，艺术家放当前歌词，没歌词放歌手
-            String line = lrcT != null && lrcIdx >= 0 ? lrcL[lrcIdx] : t.singer;
+            // 车机标题行字大：有歌词时标题放当前歌词段，艺术家放「歌名 - 歌手」；
+            // 没歌词（或还没唱到）时标题放「歌名 - 歌手」，艺术家放歌手
+            boolean ly = lrcS != null && lrcIdx >= 0;
             MediaMetadata.Builder mb = new MediaMetadata.Builder()
-                    .putString(MediaMetadata.METADATA_KEY_TITLE, t.name + " - " + t.singer)
-                    .putString(MediaMetadata.METADATA_KEY_ARTIST, line);
+                    .putString(MediaMetadata.METADATA_KEY_TITLE, ly ? lrcS[lrcIdx][lrcSeg] : t.name + " - " + t.singer)
+                    .putString(MediaMetadata.METADATA_KEY_ARTIST, ly ? t.name + " - " + t.singer : t.singer);
             int d = duration();
             if (d > 0) mb.putLong(MediaMetadata.METADATA_KEY_DURATION, d);  // 车机进度条要用
             if (cover != null) {
@@ -829,6 +909,7 @@ public class MixService extends Service {
         dlEx.shutdownNow();
         analyzer.stop();
         if (le != null) le.release();
+        unregisterReceiver(noisy);
         super.onDestroy();
     }
 }
