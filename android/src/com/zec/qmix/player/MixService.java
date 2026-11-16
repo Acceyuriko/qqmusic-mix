@@ -17,7 +17,8 @@ import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.MediaPlayer;
-import android.media.audiofx.LoudnessEnhancer;
+import android.media.audiofx.DynamicsProcessing;
+import android.os.Build;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
 import android.os.Handler;
@@ -73,13 +74,21 @@ public class MixService extends Service {
     int pendSeek;        // prepare 完成后先跳到这
     double[] pendLevel;  // 这首歌的分析结果 {start, end, loudness}，没有就是 null
     int endMs;           // 播到这里就切下一首，0 = 不管
-    LoudnessEnhancer le;
+    DynamicsProcessing dp;  // 提升音量用：输入增益 + 限幅器（API 28+）
     long[] lrcT;         // 当前歌每行歌词的时间（毫秒），没歌词是 null
     String[][] lrcS;     // 每行切好的段（车机标题行只放得下 10 个字）
     int lrcIdx = -1;     // 当前显示的是第几行，-1 = 还没唱到 / 没歌词
     int lrcSeg = -1;     // 当前显示的是这一行的第几段
 
-    static final double TARGET_DB = -16;
+    // 响度目标（我们的测量值，约等于 -11 LUFS）；增益夹在 [MAX_CUT_DB, MAX_BOOST_DB]
+    static final double TARGET_DB = -13.5;
+    static final double MAX_BOOST_DB = 6;
+    static final double MAX_CUT_DB = -12;
+    // 提升时的限幅器（参考 Spotify 大声档）：-1 dBFS 开始压，attack 5ms，release 100ms
+    static final float LIMIT_DB = -1f;
+    static final float LIMIT_ATTACK_MS = 5f;
+    static final float LIMIT_RELEASE_MS = 100f;
+    static final float LIMIT_RATIO = 10f;
 
     MediaPlayer player;
     MediaSession session;
@@ -335,9 +344,9 @@ public class MixService extends Service {
                 pendLevel = lv;
                 loadLyric(ft.mid);
                 endMs = 0;
-                if (le != null) {
-                    le.release();
-                    le = null;
+                if (dp != null) {
+                    dp.release();
+                    dp = null;
                 }
                 player.reset();
                 player.setDataSource(src);
@@ -485,18 +494,28 @@ public class MixService extends Service {
         }
         if (!resumed && lv[0] > 0) mp.seekTo((int) lv[0]);
         endMs = (int) lv[1];
-        double gainDb = Math.max(-12, Math.min(12, TARGET_DB - lv[2]));
+        double gainDb = Math.max(MAX_CUT_DB, Math.min(MAX_BOOST_DB, TARGET_DB - lv[2]));
         String how;
-        if (gainDb > 0) {
+        if (gainDb > 0 && Build.VERSION.SDK_INT < 28) {
+            // DynamicsProcessing 要 API 28；更老的系统只降不升
+            mp.setVolume(1f, 1f);
+            how = "no boost (API " + Build.VERSION.SDK_INT + ")";
+        } else if (gainDb > 0) {
             mp.setVolume(1f, 1f);
             try {
-                le = new LoudnessEnhancer(mp.getAudioSessionId());
-                le.setTargetGain((int) (gainDb * 100));
-                le.setEnabled(true);
-                how = "LoudnessEnhancer targetGain=" + (int) (gainDb * 100) + "mB";
+                DynamicsProcessing.Config cfg = new DynamicsProcessing.Config.Builder(
+                        DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION, 2,
+                        false, 0, false, 0, false, 0, true).build();
+                dp = new DynamicsProcessing(0, mp.getAudioSessionId(), cfg);
+                dp.setInputGainAllChannelsTo((float) gainDb);
+                dp.setLimiterAllChannelsTo(new DynamicsProcessing.Limiter(true, true, 0,
+                        LIMIT_ATTACK_MS, LIMIT_RELEASE_MS, LIMIT_RATIO, LIMIT_DB, 0f));
+                dp.setEnabled(true);
+                how = "DynamicsProcessing inGain=" + String.format(java.util.Locale.US, "%.1f", gainDb) + "dB limiter="
+                        + LIMIT_DB + "dB/" + LIMIT_ATTACK_MS + "ms/" + LIMIT_RELEASE_MS + "ms";
             } catch (RuntimeException e) {
                 // 设备不支持或资源不够时构造会抛，不加增益照常播
-                L.i("level " + mid + " enhancer fail " + e);
+                L.i("level " + mid + " dynamics fail " + e);
                 how = "no gain";
             }
         } else {
@@ -908,7 +927,7 @@ public class MixService extends Service {
         lrcEx.shutdownNow();
         dlEx.shutdownNow();
         analyzer.stop();
-        if (le != null) le.release();
+        if (dp != null) dp.release();
         unregisterReceiver(noisy);
         super.onDestroy();
     }
